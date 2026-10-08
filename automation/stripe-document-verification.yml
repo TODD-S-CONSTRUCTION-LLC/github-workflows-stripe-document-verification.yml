@@ -1,0 +1,78 @@
+# Start a Stripe Identity document verification for one person or job.
+#
+# Repository secrets:
+#   STRIPE_SECRET_KEY     (required) secret key for the Stripe account
+#   VERIFICATION_FLOW_ID  (optional) Dashboard flow id, vf_...
+#                         When set, the session uses that flow.
+#                         When unset, the session is a document check (type=document).
+#
+# Create the reusable flow in the Stripe Dashboard first if you want one:
+# https://dashboard.stripe.com/identity/verification-flows?create=true
+# Name it "Document verification" and enable only the document check.
+
+name: Document verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_reference_id:
+        description: 'Reference for this person or job'
+        required: true
+        type: string
+      email:
+        description: 'Email to attach to the verification (optional)'
+        required: false
+        type: string
+      return_url:
+        description: 'URL to open after the person finishes (optional)'
+        required: false
+        type: string
+
+jobs:
+  create-document-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create a document verification session
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          VERIFICATION_FLOW_ID: ${{ secrets.VERIFICATION_FLOW_ID }}
+          CLIENT_REFERENCE_ID: ${{ inputs.client_reference_id }}
+          EMAIL: ${{ inputs.email }}
+          RETURN_URL: ${{ inputs.return_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STRIPE_SECRET_KEY:-}" ]; then
+            echo "Add a STRIPE_SECRET_KEY secret on this repository."
+            exit 1
+          fi
+          args=(
+            -sS
+            --fail-with-body
+            "https://api.stripe.com/v1/identity/verification_sessions"
+            -u "${STRIPE_SECRET_KEY}:"
+            --data-urlencode "client_reference_id=${CLIENT_REFERENCE_ID}"
+          )
+          if [ -n "${VERIFICATION_FLOW_ID:-}" ]; then
+            args+=(--data-urlencode "verification_flow=${VERIFICATION_FLOW_ID}")
+          else
+            args+=(--data-urlencode "type=document")
+          fi
+          if [ -n "${EMAIL:-}" ]; then
+            args+=(--data-urlencode "provided_details[email]=${EMAIL}")
+          fi
+          if [ -n "${RETURN_URL:-}" ]; then
+            args+=(--data-urlencode "return_url=${RETURN_URL}")
+          fi
+          response=$(curl "${args[@]}")
+          id=$(jq -r '.id' <<<"$response")
+          url=$(jq -r '.url' <<<"$response")
+          status=$(jq -r '.status' <<<"$response")
+          echo "session_id=${id}"
+          echo "status=${status}"
+          {
+            echo "### Document verification"
+            echo
+            echo "- Session: \`${id}\`"
+            echo "- Status: \`${status}\`"
+            echo "- Link: ${url}"
+          } >> "$GITHUB_STEP_SUMMARY"
