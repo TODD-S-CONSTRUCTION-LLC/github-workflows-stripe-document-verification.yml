@@ -1,14 +1,11 @@
 # Start a Stripe Identity document verification for one person or job.
 #
-# Repository secrets:
-#   STRIPE_SECRET_KEY     (required) secret key for the Stripe account
-#   VERIFICATION_FLOW_ID  (optional) Dashboard flow id, vf_...
-#                         When set, the session uses that flow.
-#                         When unset, the session is a document check (type=document).
+# Repository secret (not an Actions variable):
+#   STRIPE_SECRET_KEY     secret or restricted key from the Stripe Dashboard
+#   VERIFICATION_FLOW_ID  optional Dashboard flow id, vf_...
 #
-# Create the reusable flow in the Stripe Dashboard first if you want one:
-# https://dashboard.stripe.com/identity/verification-flows?create=true
-# Name it "Document verification" and enable only the document check.
+# A restricted key (rk_...) must include Identity write permission.
+# An invalid key makes Stripe return 401 and this job fails.
 
 name: Document verification
 
@@ -41,15 +38,23 @@ jobs:
           RETURN_URL: ${{ inputs.return_url }}
         run: |
           set -euo pipefail
-          if [ -z "${STRIPE_SECRET_KEY:-}" ]; then
-            echo "Add a STRIPE_SECRET_KEY secret on this repository."
+          key=$(printf '%s' "${STRIPE_SECRET_KEY:-}" | tr -d '[:space:]')
+          if [ -z "$key" ]; then
+            echo "STRIPE_SECRET_KEY is missing. Add it under Settings, Secrets and variables, Actions, Repository secrets. An Actions variable will not work."
             exit 1
           fi
+          case "$key" in
+            sk_*|rk_*) ;;
+            *)
+              echo "STRIPE_SECRET_KEY must be a Stripe secret key (sk_...) or restricted key (rk_...)."
+              exit 1
+              ;;
+          esac
           args=(
             -sS
-            --fail-with-body
+            -w "\n%{http_code}"
             "https://api.stripe.com/v1/identity/verification_sessions"
-            -u "${STRIPE_SECRET_KEY}:"
+            -u "${key}:"
             --data-urlencode "client_reference_id=${CLIENT_REFERENCE_ID}"
           )
           if [ -n "${VERIFICATION_FLOW_ID:-}" ]; then
@@ -63,10 +68,21 @@ jobs:
           if [ -n "${RETURN_URL:-}" ]; then
             args+=(--data-urlencode "return_url=${RETURN_URL}")
           fi
-          response=$(curl "${args[@]}")
-          id=$(jq -r '.id' <<<"$response")
-          url=$(jq -r '.url' <<<"$response")
-          status=$(jq -r '.status' <<<"$response")
+          raw=$(curl "${args[@]}")
+          code=$(printf '%s' "$raw" | tail -n 1)
+          body=$(printf '%s' "$raw" | sed '$d')
+          if [ "$code" != "200" ]; then
+            message=$(printf '%s' "$body" | jq -r '.error.message // "Stripe rejected the request."' | sed -E 's/(sk|rk)_(live|test)_[A-Za-z0-9]+/[key]/g')
+            echo "Stripe returned HTTP ${code}."
+            echo "$message"
+            if [ "$code" = "401" ]; then
+              echo "This key is not valid. In Stripe, open Developers, API keys, reveal a secret key, and paste that one line into the repository secret STRIPE_SECRET_KEY."
+            fi
+            exit 1
+          fi
+          id=$(jq -r '.id' <<<"$body")
+          url=$(jq -r '.url' <<<"$body")
+          status=$(jq -r '.status' <<<"$body")
           echo "session_id=${id}"
           echo "status=${status}"
           {
