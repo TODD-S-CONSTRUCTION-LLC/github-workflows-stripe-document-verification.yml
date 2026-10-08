@@ -1,0 +1,7 @@
+{
+    "name": "Document verification",
+    "description": "Start a Stripe Identity document verification for a person or job.",
+    "iconName": "octicon shield-lock",
+    "creator": "TODD'S CONSTRUCTION, LLC",
+    "categories": ["Automation"]
+}
